@@ -27,7 +27,6 @@ int main(int argc, const char *argv[]) {
         else if (options.mode == "export")    RETURN(options.handle_export())
         else if (options.mode == "balances")  RETURN(options.handle_balances())
         else if (options.mode == "leech")     RETURN(options.handle_leech())
-        else if (options.mode == "daemon")    RETURN(options.handle_daemon())
         else if (options.mode == "scrape")    RETURN(options.handle_scrape())
         else if (options.mode == "slurp")     RETURN(options.handle_slurp())
         else if (options.mode == "quotes")    RETURN(options.handle_quotes())
@@ -41,4 +40,3 @@ int main(int argc, const char *argv[]) {
     acctlib_cleanup();
     EXIT_NOMSG(0);
 }
-

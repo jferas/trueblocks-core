@@ -224,6 +224,52 @@ extern void loadParseMap(void);
         }
     }
 
+    //-----------------------------------------------------------------------
+    bool loadTraces(CTransaction& trans, blknum_t bn, blknum_t txid, bool useCache, bool skipDdos) {
+        string_q trcFilename = getBinaryCacheFilename(CT_TRACES, bn, txid, "");
+        if (fileExists(trcFilename)) {
+            CArchive traceCache(READING_ARCHIVE);
+            if (traceCache.Lock(trcFilename, modeReadOnly, LOCK_NOWAIT)) {
+                traceCache >> trans.traces;
+                traceCache.Release();
+            }
+
+        } else {
+
+            if (skipDdos) {
+
+                CTrace dDos;
+                dDos.loadAsDdos(trans, bn, txid);
+                trans.traces.push_back(dDos);
+
+            } else if (txid == 99998 || txid == 99999) {
+
+                CTrace blockReward;
+                blockReward.loadAsBlockReward(trans, bn, txid);
+                trans.traces.push_back(blockReward);
+
+                if (txid == 99999) {
+                    CTrace txFee;
+                    txFee.loadAsTransactionFee(trans, bn, txid);
+                    trans.traces.push_back(txFee);
+                }
+
+            } else {
+
+                getTraces(trans.traces, trans.getValueByName("hash"));
+
+            }
+
+            establishFolder(trcFilename);
+            CArchive traceCache(WRITING_ARCHIVE);
+            if (traceCache.Lock(trcFilename, modeWriteCreate, LOCK_NOWAIT)) {
+                traceCache << trans.traces;
+                traceCache.Release();
+            }
+        }
+        return true;
+    }
+
     //-------------------------------------------------------------------------
     bool getFullReceipt(CTransaction *trans, bool needsTrace) {
 
@@ -821,44 +867,100 @@ extern void loadParseMap(void);
         return true;
     }
 
+    //--------------------------------------------------------------------------
+    inline bool prevLastBlocks(blknum_t& u, blknum_t& r, blknum_t& s, blknum_t& f, blknum_t& c, bool write) {
+        string_q fn = configPath("cache/tmp/scraper-status.txt");
+        if (write) {
+            ostringstream os;
+            os << u << "\t" << r << "\t" << s << "\t" << f << "\t" << c << endl;
+            stringToAsciiFile(fn, os.str());
+        } else {
+            string_q contents = asciiFileToString(fn);
+            CUintArray parts;
+            explode(parts, contents, '\t');
+            if (parts.size()) {
+                u = parts[0]; r = parts[1]; s = parts[2]; f = parts[3]; c = parts[4];
+            } else {
+                u = r = s = f = c = NOPOS;
+            }
+        }
+        return true;
+    }
+
     //-------------------------------------------------------------------------
-    string_q scraperStatus(void) {
+    inline string_q showLastBlocks(const blknum_t u, const blknum_t r, const blknum_t s, const blknum_t f, const blknum_t c) {
+        ostringstream os;
+        if (isTestMode())
+            os << "--final--, --staging--, --ripe--, --unripe--, --client--";
+        else {
+            os << cYellow;
+            os << padNum9T((int64_t)f) << ", ";
+            os << padNum9T((int64_t)s) << ", ";
+            os << padNum9T((int64_t)r) << ", ";
+            os << padNum9T((int64_t)u) << ", ";
+            os << padNum9T((int64_t)c);
+            os << cOff;
+        }
+        return os.str();
+    }
+
+    //-------------------------------------------------------------------------
+    string_q scraperStatus(bool terse) {
 
         char hostname[HOST_NAME_MAX];  gethostname(hostname, HOST_NAME_MAX);
         char username[LOGIN_NAME_MAX]; getlogin_r(username, LOGIN_NAME_MAX);
         string_q hostUser = string_q(hostname) + " (" + username + ")";
 
-        string_q tmpStore = configPath("cache/tmp/scraper-status.txt");
-
-        uint64_t prevDiff = str_2_Uint(asciiFileToString(tmpStore));
         uint64_t unripe, ripe, staging, finalized, client;
+        uint64_t pUnripe, pRipe, pStaging, pFinalized, pClient;
+
         getLastBlocks(unripe, ripe, staging, finalized, client);
+        if (fileExists(configPath("cache/tmp/scraper-status.txt"))) {
+            prevLastBlocks(pUnripe, pRipe, pStaging, pFinalized, pClient, false);
+        } else {
+            pUnripe = unripe; pRipe = ripe; pStaging = staging; pFinalized = finalized; pClient = client;
+        }
+        prevLastBlocks(unripe, ripe, staging, finalized, client, true);
 
-        uint64_t currDiff = finalized > client ? finalized - client : client - finalized;
-        stringToAsciiFile(tmpStore, uint_2_Str(currDiff));  // so we can use it next time
+        ostringstream heights;
+        heights << showLastBlocks(unripe, ripe, staging, finalized, client);
 
-#define showOne(a, b) cYellow << (isTestMode() ? a : b) << cOff
-#define showOne1(a) showOne(a, a)
-        ostringstream cos;
-        cos << showOne("--final--, --staging--, --ripe--, --unripe--", 
-                        uint_2_Str(finalized)+", "+uint_2_Str(staging)+", "+uint_2_Str(ripe)+", "+uint_2_Str(unripe));
+        ostringstream pHeights;
+        pHeights << showLastBlocks(pUnripe, pRipe, pStaging, pFinalized, pClient);
 
-        ostringstream dos;
-        dos << showOne("--diff--", (currDiff>prevDiff?"-":"+") + uint_2_Str(currDiff));
-        dos << showOne("--diffdiff--", (currDiff > prevDiff ? " (-" + uint_2_Str(currDiff-prevDiff) : " (+"+uint_2_Str(prevDiff-currDiff)) + ")");
+        ostringstream distances;
+        distances << showLastBlocks(client-unripe, client-ripe, client-staging, client-finalized, client-client);
+
+        ostringstream diffs;
+        diffs << showLastBlocks(unripe-pUnripe, ripe-pRipe, staging-pStaging, finalized-pFinalized, client-pClient);
+
+        ostringstream pNeighbors;
+        pNeighbors << showLastBlocks(pRipe-pUnripe, pStaging-pRipe, pFinalized-pStaging, 0, 0);
 
         string_q rpcProvider = getCurlContext()->baseURL;
 
-        ostringstream os;
-        os << cGreen << "  Client version:     " << showOne("--version--", getVersionFromClient())    << endl;
-        os << cGreen << "  Trueblocks Version: " << showOne1(getVersionStr())                         << endl;
-        os << cGreen << "  RPC Provider:       " << showOne("--rpc_provider--", rpcProvider)          << endl;
-        os << cGreen << "  Cache location:     " << showOne("--cache_dir--", getCachePath(""))        << endl;
-        os << cGreen << "  Host (user):        " << showOne("--host (user)--", hostUser)              << endl;
-        os << cGreen << "  Latest cache:       " << cos.str()                                         << endl;
-        os << cGreen << "  Latest client:      " << showOne("--client--", uint_2_Str(client))         << endl;
-        os << cGreen << "  Dist from head:     " << dos.str()                                         << endl;
+#define showOne(a, b) cYellow << (isTestMode() ? a : b) << cOff
+#define showOne1(a) showOne(a, a)
 
+        ostringstream os;
+        if (!terse) {
+            os << cGreen << "  Client version:     " << showOne("--version--", getVersionFromClient()) << endl;
+            os << cGreen << "  Trueblocks version: " << showOne1(getVersionStr())                      << endl;
+            os << cGreen << "  RPC provider:       " << showOne("--rpc_provider--", rpcProvider)       << endl;
+            os << cGreen << "  Cache location:     " << showOne("--cache_dir--", getCachePath(""))     << endl;
+            os << cGreen << "  Host (user):        " << showOne("--host (user)--", hostUser)           << endl;
+            os << cGreen << "  Heights:            " << heights.str()                                  << endl;
+            os << cGreen << "  Previous Heights:   " << pHeights.str()                                 << endl;
+            os << cGreen << "  Distances:          " << distances.str()                                << endl;
+            os << cGreen << "  Diffs:              " << diffs.str()                                    << endl;
+            os << cGreen << "  Neighbors:          " << pNeighbors.str()                               << endl;
+        } else {
+            os << "\t  heights:\t"      << heights.str()    << endl;
+            os << "\t  prev heights:\t" << pHeights.str()   << endl;
+            os << "\t  distances:\t"    << distances.str()  << endl;
+            os << "\t  diffs:\t"        << diffs.str()      << endl;
+            os << "\t  neighbors:\t"    << pNeighbors.str() << endl;
+        }
         return os.str();
     }
 
@@ -1072,6 +1174,37 @@ extern void loadParseMap(void);
         }
         getBlock(block, first);
         return true;
+    }
+
+    //-------------------------------------------------------------------------
+    wei_t blockReward(blknum_t bn, blknum_t txid, bool txFee) {
+        if (txFee || txid == 99998)
+            return str_2_Wei("0000000000000000000");
+
+        if (bn < byzantiumBlock) {
+            return str_2_Wei("5000000000000000000");
+        } else if (bn < constantinopleBlock) {
+            return str_2_Wei("3000000000000000000");
+        } else {
+            return str_2_Wei("2000000000000000000");
+        }
+    }
+
+    //----------------------------------------------------------------
+    bool excludeTrace(const CTransaction *trans, size_t maxTraces) {
+        if (!ddosRange(trans->blockNumber))
+            return false; // be careful, it's backwards
+
+        static string_q exclusions;
+        if (getGlobalConfig("blockScrape")->getConfigBool("exclusions", "enabled", false)) {
+            if (exclusions.empty())
+                exclusions = getGlobalConfig("blockScrape")->getConfigStr("exclusions", "list", "");
+            if (contains(exclusions, trans->to))
+                return true;
+            if (contains(exclusions, trans->from))
+                return true;
+        }
+        return (getTraceCount(trans->hash) > maxTraces);
     }
 
     //-----------------------------------------------------------------------

@@ -15,15 +15,15 @@
 
 //---------------------------------------------------------------------------------------------------
 static const COption params[] = {
-    COption("~addr",       "the address(es) of the smart contract(s) to grab"),
+    COption("~addr_list",  "list of one or more smart contracts whose ABI to grab from EtherScan"),
     COption("-canonical",  "convert all types to their canonical represenation and remove all spaces from display"),
     COption("-generate",   "generate C++ code into the current folder for all functions and events found in the ABI"),
     COption("-data",       "export the display as data"),
     COption("-encode",     "generate the encodings for the functions / events in the ABI"),
     COption("-json",       "print the ABI to the screen as json"),
     COption("-noconst",    "generate encodings for non-constant functions and events only (always true when generating)"), // NOLINT
-    COption("-open",       "open the ABI file for editing, download if not already present"),
     COption("-so(l):<fn>", "create the ABI file from a .sol file in the local directory"),
+    COption("@open",       "open the ABI file for editing, download if not already present"),
     COption("@silent",     "if ABI cannot be acquired, fail silently (useful for scripting)"),
     COption("@nodec",      "do not decorate duplicate names"),
     COption("@known",      "load common 'known' ABIs from cache"),
@@ -230,7 +230,7 @@ COptions::~COptions(void) {
 //--------------------------------------------------------------------------------
 string_q COptions::postProcess(const string_q& which, const string_q& str) const {
     if (which == "options") {
-        return str;
+        return substitute(str, "addr_list", "<address> [address...]");
 
     } else if (which == "notes" && (verbose || COptions::isReadme)) {
         string_q ret;

@@ -8,15 +8,17 @@
 
 //---------------------------------------------------------------------------------------------------
 static const COption params[] = {
-    COption("~address_list",      "one or more addresses (0x...) to export"),
+    COption("~addr_list",         "one or more addresses (0x...) to export"),
     COption("-fmt:<fmt>",         "export format (one of [json|txt|csv])"),
     COption("-articulate",        "articulate transactions, traces, logs, and outputs"),
     COption("-logs",              "export logs instead of transactions"),
+    COption("-traces",            "export traces instead of transactions"),
     COption("@blocks:<on/off>",   "write blocks to the binary cache ('off' by default)"),
-    COption("@txs:<on/off>",      "write transactions to the binary cache ('on' by default)"),
-    COption("@t(r)aces:<on/off>", "write traces to the binary cache ('off' by default)"),
+    COption("@tx(s):<on/off>",    "write transactions to the binary cache ('on' by default)"),
+    COption("@t(r)c:<on/off>",    "write traces to the binary cache ('off' by default)"),
     COption("@ddos:<on/off>",     "skip over dDos transactions in export ('on' by default)"),
     COption("@maxTraces:<num>",   "if --ddos:on, the number of traces defining a dDos (default = 250)"),
+    COption("@noHeader",          "do not show the header row"),
     COption("@start:<num>",       "first block to export (inclusive)"),
     COption("@end:<num>",         "last block to export (inclusive)"),
     COption("",                   "Export full detail of transactions for one or more Ethereum addresses.\n"),
@@ -25,6 +27,7 @@ static const size_t nParams = sizeof(params) / sizeof(COption);
 
 extern const char* STR_DISPLAY;
 extern const char* STR_LOG_DISPLAY;
+extern const char* STR_TRACE_DISPLAY;
 //---------------------------------------------------------------------------------------------------
 bool COptions::parseArguments(string_q& command) {
 
@@ -33,6 +36,7 @@ bool COptions::parseArguments(string_q& command) {
     if (!standardOptions(command))
         return false;
 
+    bool noHeader = false;
     Init();
     explode(arguments, command, ' ');
     for (auto arg : arguments) {
@@ -42,17 +46,17 @@ bool COptions::parseArguments(string_q& command) {
                 return usage("Please provide either 'on' or 'off' for the --blocks options. Quitting...");
             writeBlocks = (arg == "on" ? true : false);
 
-        } else if (startsWith(arg, "-t") || startsWith(arg, "--txs")) {
-            arg = substitute(substitute(arg, "-t:", ""), "--txs:", "");
+        } else if (startsWith(arg, "-s") || startsWith(arg, "--txs")) {
+            arg = substitute(substitute(arg, "-s:", ""), "--txs:", "");
             if (arg != "on" && arg != "off")
                 return usage("Please provide either 'on' or 'off' for the --txs options. Quitting...");
             writeTrxs = (arg == "on" ? true : false);
 
-        } else if (startsWith(arg, "-r") || startsWith(arg, "--traces")) {
-            arg = substitute(substitute(arg, "-r:", ""), "--traces:", "");
+        } else if (startsWith(arg, "-r") || startsWith(arg, "--trc")) {
+            arg = substitute(substitute(arg, "-r:", ""), "--trc:", "");
             if (arg != "on" && arg != "off")
-                return usage("Please provide either 'on' or 'off' for the --trace options. Quitting...");
-            writeTraces = (arg == "on" ? true : false);
+                return usage("Please provide either 'on' or 'off' for the --trc options. Quitting...");
+            writeTrcs = (arg == "on" ? true : false);
 
         } else if (startsWith(arg, "-d") || startsWith(arg, "--ddos")) {
             arg = substitute(substitute(arg, "-d:", ""), "--ddos:", "");
@@ -66,8 +70,14 @@ bool COptions::parseArguments(string_q& command) {
                 return usage("Please provide a number (you provided " + arg + ") for --maxTraces. Quitting...");
             maxTraces = str_2_Uint(arg);
 
+        } else if (arg == "-n" || arg == "--noHeader") {
+            noHeader = true;
+
         } else if (arg == "-l" || arg == "--logs") {
             doLogs = true;
+
+        } else if (arg == "-t" || arg == "--traces") {
+            doTraces = true;
 
         } else if (arg == "-a" || arg == "--articulate") {
             articulate = true;
@@ -125,6 +135,9 @@ bool COptions::parseArguments(string_q& command) {
 
     SHOW_FIELD(CTransaction, "traces");
 
+    if (doLogs && doTraces)
+        return usage("Please export either logs or traces, not both. Quitting...");
+
     if (monitors.size() == 0)
         return usage("You must provide at least one Ethereum address. Quitting...");
 
@@ -140,14 +153,17 @@ bool COptions::parseArguments(string_q& command) {
     SEP4("field showing: " + toml.getConfigStr("fields", "show", ""));
     manageFields(toml.getConfigStr("fields", "show", ""), true );
 
+    // Load as many ABI files as we have
+    abis.loadAbiKnown("all");
+//    abis.loadCachedAbis("all");
+
     // Try to articulate the watched addresses
     for (size_t i = 0 ; i < monitors.size() ; i++) {
         CAccountWatch *watch = &monitors[i];
-        watch->abi_spec.loadAbiByAddress(watch->address);
-        watch->abi_spec.loadAbiKnown("all");
+        abis.loadAbiByAddress(watch->address);
+        //abis.loadAbiKnown("all");
         string_q path = getMonitorPath(watch->address + ".toml");
-        if (fileExists(path)) { // if there's a config file, let's use it
-                                // user can tell us the names of other addresses
+        if (fileExists(path)) { // if there's a config file, let's use it user can tell us the names of other addresses
             CToml thisToml(path);
             string_q str = substitute(substitute(thisToml.getConfigJson("named", "list", ""),"[",""),"=",":");
             CAccountWatch item;
@@ -157,7 +173,7 @@ bool COptions::parseArguments(string_q& command) {
                 item.extra_data = getVersionStr() + "/" + item.address;
                 item.finishParse();
                 named.push_back(item);
-                watch->abi_spec.loadAbiByAddress(item.address);
+                abis.loadAbiByAddress(item.address);
                 item = CAccountWatch();
             }
         }
@@ -168,7 +184,7 @@ bool COptions::parseArguments(string_q& command) {
 
     writeBlocks = getGlobalConfig("acctExport")->getConfigBool("settings", "writeBlocks", writeBlocks);;
     writeTrxs   = getGlobalConfig("acctExport")->getConfigBool("settings", "writeTrxs", writeTrxs);;
-    writeTraces = getGlobalConfig("acctExport")->getConfigBool("settings", "writeTraces", writeTraces);;
+    writeTrcs   = getGlobalConfig("acctExport")->getConfigBool("settings", "writeTraces", writeTrcs);;
     skipDdos    = getGlobalConfig("acctExport")->getConfigBool("settings", "skipDdos", skipDdos);;
     maxTraces   = getGlobalConfig("acctExport")->getConfigBool("settings", "maxTraces", maxTraces);;
 
@@ -184,13 +200,23 @@ bool COptions::parseArguments(string_q& command) {
         if (!contains(toLower(format), "trace"))
             HIDE_FIELD(CTransaction, "traces");
 
-        deflt = getGlobalConfig("acctExport")->getConfigStr("display", "trace", "{TRACES}");
+        deflt = getGlobalConfig("acctExport")->getConfigStr("display", "trace", STR_TRACE_DISPLAY);
         format = toml.getConfigStr("formats", "trace_fmt", deflt);
         expContext().fmtMap["trace_fmt"] = cleanFmt(format, exportFmt);
 
         deflt = getGlobalConfig("acctExport")->getConfigStr("display", "log", STR_LOG_DISPLAY);
         format = toml.getConfigStr("formats", "logentry_fmt", deflt);
         expContext().fmtMap["logentry_fmt"] = cleanFmt(format, exportFmt);
+
+    }
+
+    if (!noHeader) {
+        if (doTraces)
+            expContext().fmtMap["header"] = cleanFmt(expContext().fmtMap["trace_fmt"], exportFmt);
+        else if (doLogs)
+            expContext().fmtMap["header"] = cleanFmt(expContext().fmtMap["logentry_fmt"], exportFmt);
+        else
+            expContext().fmtMap["header"] = cleanFmt(expContext().fmtMap["transaction_fmt"], exportFmt);
     }
 
     return true;
@@ -205,11 +231,12 @@ void COptions::Init(void) {
 
     writeBlocks = false;
     writeTrxs = true;
-    writeTraces = false;
+    writeTrcs = false;
     skipDdos = true;
     maxTraces = 250;
     articulate = false;
     doLogs = false;
+    doTraces = false;
 
     minArgs = 0;
 }
@@ -230,7 +257,7 @@ COptions::~COptions(void) {
 string_q COptions::postProcess(const string_q& which, const string_q& str) const {
 
     if (which == "options") {
-        return substitute(str, "address_list", "<address> [address...]");
+        return substitute(str, "addr_list", "<address> [address...]");
 
     } else if (which == "notes" && (verbose || COptions::isReadme)) {
 
@@ -268,7 +295,7 @@ bool COptions::loadMonitorData(CAppearanceArray_base& apps, const address_t& add
         for (size_t i = 0 ; i < nRecords ; i++) {
             if (buffer[i].blk == 0)
                 prefundMap[buffer[i].txid] = addr;
-            if (buffer[i].txid == 99999)
+            if (buffer[i].txid == 99999 || buffer[i].txid == 99998)
                 blkRewardMap[buffer[i].blk] = addr;
             apps.push_back(buffer[i]);
         }
@@ -315,7 +342,7 @@ bool COptions::loadData(void) {
     if (hasFuture)
         LOG_WARN("Cache file contains blocks ahead of the chain. Some items will not be exported.");
 
-    if (!freshenTsArray(items[items.size()-1].blk)) {
+    if (!loadTsArray(items[items.size()-1].blk)) {
         EXIT_FAIL("Could not open timestamp file.");
     }
 
@@ -323,42 +350,19 @@ bool COptions::loadData(void) {
 }
 
 //-----------------------------------------------------------------------
-bool COptions::freshenTsArray(blknum_t last) {
+bool COptions::loadTsArray(blknum_t last) {
 
-    string_q zipFile = configPath("ts.bin.gz");
-    if (fileExists(zipFile)) {  // is this first run since install?
-        string_q cmd = "cd " + configPath("") + " ; gunzip " + zipFile;
-        cerr << doCommand(cmd) << endl;
-        ASSERT(!fileExists(zipFile));
-    }
-
-    // We've been asked to freshen to the latest block in this address. If
-    // we're already there, do nothing.
-    string_q fn = configPath("ts.bin");
-    if (!fileExists(fn))
+    CUintArray unused;
+    if (!freshenTsDatabase(last, unused))
         return false;
-
-    ts_cnt = fileSize(fn) / sizeof(uint32_t);
-    if (last >= ts_cnt) {
-        CArchive oo(WRITING_ARCHIVE);
-        if (oo.Lock(fn, modeWriteAppend, LOCK_WAIT)) {
-            for (blknum_t bl = ts_cnt ; bl < last ; bl++) {
-                CBlock block;
-                getBlock_light(block, bl);
-                oo << (uint32_t)block.timestamp;
-                oo.flush();
-                cerr << "Updating timestamp for block " << bl << " (" << block.timestamp << ") of " << last << " (" << (last - bl) << ")    \r";
-                cerr.flush();
-            }
-            oo.Release();
-        }
-    }
 
     if (ts_array) {
         delete [] ts_array;
         ts_array = NULL;
+        ts_cnt = 0;
     }
 
+    string_q fn = configPath("ts.bin");
     ts_cnt = fileSize(fn) / sizeof(uint32_t);
     ts_array = new uint32_t[ts_cnt];
     if (!ts_array)
@@ -372,6 +376,52 @@ bool COptions::freshenTsArray(blknum_t last) {
     in.Release();
     return true;
 }
+
+//-----------------------------------------------------------------------
+bool freshenTsDatabase(blknum_t last, CUintArray& tsArray) {
+
+    string_q tsFile = configPath("ts.bin");
+    if (!fileExists(tsFile)) {
+        // Try to unpack the zip file if there is one
+        string_q zipFile = configPath("ts.bin.gz");
+        if (fileExists(zipFile)) { // first run since install? Let's try to get some timestamps
+            string_q cmd = "cd " + configPath("") + " ; gunzip " + zipFile;
+            cerr << doCommand(cmd) << endl;
+            ASSERT(!fileExists(zipFile));
+        }
+    }
+
+    size_t cnt = fileSize(tsFile) / sizeof(uint32_t);
+    if (last >= cnt) {
+        CArchive oo(WRITING_ARCHIVE);
+        if (oo.Lock(tsFile, modeWriteAppend, LOCK_WAIT)) {
+            if (tsArray.size() > 0) {
+                for (auto ts : tsArray) {
+                    oo << (uint32_t)ts;
+                    cerr << "Adding timestamp " << ts << "    \r";
+                    cerr.flush();
+                }
+            } else {
+                for (blknum_t bl = cnt ; bl <= last ; bl++) {  // we want to process 'last'
+                    CBlock block;
+                    getBlock_light(block, bl);
+                    oo << (uint32_t)block.timestamp;
+                    oo.flush();
+                    cerr << "Adding timestamp " << bl << " (" << block.timestamp << ") of " << last << " (" << (last - bl) << ")    \r";
+                    cerr.flush();
+                }
+            }
+            oo.Release();
+        }
+    }
+
+    return true;
+}
+
+#if 0
+    COption("@to_file",     "send results to a temporary file and return the filename"),
+    COption("@output:<fn>", "send results to file 'fn' and return the filename"),
+#endif
 
 //-----------------------------------------------------------------------
 const char* STR_DISPLAY =
@@ -400,3 +450,47 @@ const char* STR_LOG_DISPLAY =
 "[{DATA}]\t"
 "[{TYPE}]\t"
 "[{COMPRESSEDLOG}]";
+
+//--------------------------------------------------------------------------------
+const char* STR_TRACE_DISPLAY =
+"[{BLOCKNUMBER}]\t"
+"[{TRANSACTIONPOSITION}]\t"
+"[{TRACEADDRESS}]\t"
+"[{ACTION::CALLTYPE}]\t"
+"[{ERROR}]\t"
+"[{ACTION::FROM}]\t"
+"[{ACTION::TO}]\t"
+"[{ACTION::VALUE}]\t"
+"[{ACTION::ETHER}]\t"
+"[{ACTION::GAS}]\t"
+"[{RESULT::GASUSED}]\t"
+"[{ACTION::INPUT}]\t"
+"[{COMPRESSEDTRACE}]\t"
+"[{RESULT::OUTPUT}]";
+
+/*
+ "[{BLOCKHASH}]\t"
+ "[{BLOCKNUMBER}]\t"
+ "[{SUBTRACES}]\t"
+ "[{TRACEADDRESS}]\t"
+ "[{TRANSACTIONHASH}]\t"
+ "[{TRANSACTIONPOSITION}]\t"
+ "[{TYPE}]\t"
+ "[{ERROR}]\t"
+ "[{ARTICULATEDTRACE}]\t"
+ "[{COMPRESSEDTRACE}]\t"
+ "[{ACTION::ADDRESS}]\t"
+ "[{ACTION::BALANCE}]\t"
+ "[{ACTION::CALLTYPE}]\t"
+ "[{ACTION::FROM}]\t"
+ "[{ACTION::GAS}]\t"
+ "[{ACTION::INIT}]\t"
+ "[{ACTION::INPUT}]\t"
+ "[{ACTION::REFUNDADDRESS}]\t"
+ "[{ACTION::TO}]\t"
+ "[{ACTION::VALUE}]\t"
+ "[{RESULT::ADDRESS}]\t"
+ "[{RESULT::CODE}]\t"
+ "[{RESULT::GASUSED}]\t"
+ "[{RESULT::OUTPUT}]";
+ */

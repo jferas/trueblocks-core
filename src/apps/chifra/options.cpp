@@ -8,8 +8,8 @@
 
 //---------------------------------------------------------------------------------------------------
 static const COption params[] = {
-    COption("~command", "one of [ leech | scrape | daemon | list | export | balances | stats | ls | rm | accounts | config | slurp | quotes | data | blocks | trans | receipts | logs | traces ]"),
-    COption("-sleep:<num>", "for the 'scrape' and 'daemon' commands, the number of seconds chifra should sleep between runs (default 0)"),
+    COption("~command", "one of [ leech | scrape | list | export | balances | stats | ls | rm | accounts | config | slurp | quotes | data | blocks | trans | receipts | logs | traces | state | abi ]"),
+    COption("-sleep:<num>", "for the 'scrape' command, the number of seconds chifra should sleep between runs (default 14 if caught up, zero otherwise)"),
     COption("",         "Create a TrueBlocks monitor configuration.\n"),
 };
 static const size_t nParams = sizeof(params) / sizeof(COption);
@@ -79,7 +79,10 @@ bool COptions::parseArguments(string_q& command) {
                         // ignore --to_file flag in docker mode
                     }
                 } else {
-                    tool_flags += (arg + " ");
+                    if (arg == "--noBlooms")
+                        freshen_flags = arg;
+                    else
+                        tool_flags += (arg + " ");
                 }
             }
         }
@@ -87,11 +90,19 @@ bool COptions::parseArguments(string_q& command) {
 
     if (mode == "blocks" ||
     	mode == "trans" ||
-    	mode == "receipts" ||
+        mode == "receipts" ||
         mode == "accounts" ||
     	mode == "logs" ||
-    	mode == "traces") {
+        mode == "traces" ||
+        mode == "abi") {
         tool_flags += (" --" + mode);
+        mode = "data";
+    }
+
+    if (mode == "state") {
+        replace(tool_flags, "--mode code", "--mode some --code");
+        replace(tool_flags, "--mode nonce", "--mode some --nonce");
+        replace(tool_flags, "--mode balance", "--mode some --balance");
         mode = "data";
     }
 
@@ -110,6 +121,17 @@ bool COptions::parseArguments(string_q& command) {
 
     tool_flags = trim(tool_flags, ' ');
     freshen_flags = trim(freshen_flags, ' ');
+
+    blknum_t unripe, ripe, staging, finalized, client;
+    getLastBlocks(unripe, ripe, staging, finalized, client);
+    if ((client - finalized) > 2500) {
+        cerr << "Sleeping zero: " << scrapeSleep << " " << endl;
+        scrapeSleep = 0;
+    } else {
+        if (mode == "scrape") {
+            cerr << "Sleeping every " << scrapeSleep << " seconds." << endl;
+        }
+    }
 
     LOG4("API_MODE=", getEnvStr("API_MODE"));
     LOG4("DOCKER_MODE=", getEnvStr("DOCKER_MODE"));
@@ -132,7 +154,7 @@ void COptions::Init(void) {
     freshen_flags = "";
     mode          = "";
     stats         = false;
-    scrapeSleep   = 0;
+    scrapeSleep   = 14;
     minArgs       = 0;
 }
 
